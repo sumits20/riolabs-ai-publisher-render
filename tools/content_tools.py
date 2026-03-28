@@ -61,33 +61,23 @@ def write_article_tool(final_title: str, final_topic: str, teen_style_notes: str
     Returns clean HTML suitable for WordPress.
     """
     prompt = f"""
-Write a blog article using ONLY the research context below.
-
-Title:
-{final_title}
-
-Chosen topic:
-{final_topic}
-
-Audience:
-Indian teenagers
-
-Style guidance:
-{teen_style_notes}
-
 Rules:
-- use simple English
-- easy to read
-- short paragraphs
-- engaging introduction
-- clear subheadings
-- factual only
-- do not invent facts not supported by the research
-- output clean HTML for WordPress
-- use tags like <h2>, <p>, <ul>, <li>
-- do not include markdown fences
-- do not include <html> or <body>
-
+- Use simple English suitable for teenagers
+- Write in a neutral article style (NOT conversational, NOT addressing the reader directly)
+- Do NOT use phrases like "Hey", "Imagine", "Have you ever", or "Let’s"
+- Do NOT speak to the reader as "you"
+- Maintain an informative and slightly engaging tone
+- Use clear structure:
+    - Introduction
+    - 3–5 subheadings (<h2>)
+    - Moderate paragraphs
+    - Conclusion
+- Keep it factual and based only on the research context
+- No storytelling like a script or narration
+- No emojis or casual chat tone
+- Output clean HTML suitable for WordPress
+- Use <h2>, <p>, <ul>, <li> where needed
+- Do not include markdown or code blocks
 Research context:
 {research_text}
 """
