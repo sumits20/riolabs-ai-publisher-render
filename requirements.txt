@@ -1,2 +1,7 @@
 streamlit
 requests
+langchain
+langchain-core
+langchain-openai
+langgraph
+tavily-python
