@@ -28,7 +28,6 @@ Recent WordPress posts:
 Task:
 - choose the best article angle
 - avoid repeating existing recent blog topics
-- make it engaging for Indian teens
 - keep it factual and easy to understand
 
 Return STRICT JSON only in this format:
