@@ -62,14 +62,13 @@ def write_article_tool(final_title: str, final_topic: str, teen_style_notes: str
     """
     prompt = f"""
 Rules:
+- Write it like a story from hostory
 - Use simple English suitable for teenagers
 - Write in a neutral article style (NOT conversational, NOT addressing the reader directly)
 - Do NOT use phrases like "Hey", "Imagine", "Have you ever", or "Let’s"
 - Do NOT speak to the reader as "you"
-- Maintain an informative and slightly engaging tone
 - Use clear structure:
     - Introduction
-    - 3–5 subheadings (<h2>)
     - Moderate paragraphs
     - Conclusion
 - Keep it factual and based only on the research context
