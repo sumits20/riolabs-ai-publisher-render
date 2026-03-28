@@ -51,12 +51,14 @@ def build_research_text(results: list[dict]) -> str:
         title = r.get("title", "").strip()
         url = r.get("url", "").strip()
         content = r.get("content", "").strip()
+
         blocks.append(
             f"Result {idx}\n"
             f"Title: {title}\n"
             f"URL: {url}\n"
             f"Summary: {content}"
         )
+
     return "\n\n".join(blocks)
 
 
@@ -70,9 +72,20 @@ def build_recent_posts_text(posts: list[dict]) -> str:
     )
 
 
+def try_parse_json(text: str) -> dict:
+    text = text.strip()
+
+    # remove markdown fences if model accidentally adds them
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text.replace("json", "", 1).strip()
+
+    return json.loads(text)
+
+
 def choose_best_topic(user_topic: str, research_text: str, recent_posts_text: str) -> dict:
     prompt = f"""
-You are a content strategist for a science/history/news style blog.
+You are a content strategist for a science, discovery, history, and news blog.
 
 User's starting topic:
 {user_topic}
@@ -84,11 +97,12 @@ Recent posts already on the user's WordPress site:
 {recent_posts_text}
 
 Your task:
-1. Suggest the BEST article angle based on current web interest.
-2. Avoid repeating topics that look too similar to the existing WordPress posts.
+1. Suggest the BEST article angle based on recent web interest.
+2. Avoid repeating topics that are too similar to existing WordPress posts.
 3. Make the topic attractive for Indian teenagers.
-4. Keep it factual and easy to understand.
-5. Return STRICT JSON only.
+4. Keep it factual, easy to understand, and interesting.
+5. Prefer a focused angle rather than a very broad topic.
+6. Return STRICT JSON only.
 
 Return JSON with this structure:
 {{
@@ -96,7 +110,7 @@ Return JSON with this structure:
   "final_topic": "Short description of chosen angle",
   "why_selected": "Why this is a good angle",
   "teen_style_notes": "How the article should feel for Indian teens",
-  "excerpt": "A 1-2 sentence short excerpt for the WordPress draft"
+  "excerpt": "A short 1-2 sentence excerpt for the WordPress draft"
 }}
 """
 
@@ -106,7 +120,7 @@ Return JSON with this structure:
         messages=[
             {
                 "role": "system",
-                "content": "You return only valid JSON. No markdown fences. No explanation outside JSON."
+                "content": "Return only valid JSON. No markdown fences. No explanation outside JSON."
             },
             {
                 "role": "user",
@@ -115,11 +129,11 @@ Return JSON with this structure:
         ]
     )
 
-    text = response.choices[0].message.content.strip()
+    raw_text = response.choices[0].message.content or ""
 
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
+        return try_parse_json(raw_text)
+    except Exception:
         return {
             "final_title": user_topic.strip().title(),
             "final_topic": user_topic.strip(),
@@ -147,17 +161,19 @@ Style guidance:
 
 Rules:
 - Use simple English
-- Easy to read for teens
+- Easy to read for teenagers
 - Short paragraphs
 - Engaging introduction
 - Use clear subheadings
 - Keep it factual
 - Do not invent facts not supported by the research context
 - Do not use heavy jargon
-- Make it feel interesting and modern
+- Make it feel modern and interesting
+- Include a short conclusion
 - Output clean HTML suitable for WordPress
 - Use tags like <h2>, <p>, <ul>, <li> where useful
 - Do not include <html>, <body>, or markdown code fences
+- Do not include fake citations like [1] or source lists at the end
 
 Research context:
 {research_text}
@@ -178,7 +194,7 @@ Research context:
         ]
     )
 
-    return response.choices[0].message.content.strip()
+    return (response.choices[0].message.content or "").strip()
 
 
 # ----------------------------
@@ -189,6 +205,7 @@ with st.sidebar:
     max_results = st.slider("Tavily results", min_value=3, max_value=10, value=5)
     recent_post_limit = st.slider("Recent WordPress posts to compare", min_value=3, max_value=20, value=10)
     auto_create_draft = st.checkbox("Create WordPress draft automatically", value=True)
+    show_html_code = st.checkbox("Show raw HTML", value=False)
 
 
 # ----------------------------
@@ -239,7 +256,9 @@ if run_btn:
 
         st.success("Article generated successfully.")
 
-        tab1, tab2, tab3, tab4 = st.tabs(["Chosen Topic", "Article Preview", "Research", "Recent Posts"])
+        tab1, tab2, tab3, tab4 = st.tabs(
+            ["Chosen Topic", "Article Preview", "Research", "Recent Posts"]
+        )
 
         with tab1:
             st.subheader(final_title)
@@ -250,8 +269,11 @@ if run_btn:
 
         with tab2:
             st.subheader("Generated Article")
-            st.code(article_html, language="html")
-            st.markdown("---")
+
+            if show_html_code:
+                st.code(article_html, language="html")
+                st.markdown("---")
+
             st.markdown("### Rendered Preview")
             st.components.v1.html(article_html, height=700, scrolling=True)
 
@@ -280,6 +302,10 @@ if run_btn:
                 )
 
             st.success("Draft created in WordPress.")
+            st.write(f"**Post ID:** {post.get('id')}")
+            st.write(f"**Status:** {post.get('status')}")
+            st.write(f"**Title:** {post.get('title')}")
+            st.write(f"**Link:** {post.get('link')}")
             st.json(post)
 
     except Exception as e:
