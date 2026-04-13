@@ -1,9 +1,8 @@
-# app.py
-
 import os
 import json
 import streamlit as st
 from openai import OpenAI
+from anthropic import Anthropic
 
 from tools.tavily_research import tavily_search
 from tools.wordpress_tools import get_recent_posts, create_draft_post
@@ -11,13 +10,14 @@ from tools.wordpress_tools import get_recent_posts, create_draft_post
 
 st.set_page_config(page_title="AI WordPress Publisher", layout="wide")
 st.title("AI WordPress Publisher")
-st.caption("Research a topic, choose a better angle, write an article, and save it to WordPress as a draft.")
+st.caption("Research a topic, choose a better angle, generate GPT and Claude versions, then save the selected one to WordPress as a draft.")
 
 
 # ----------------------------
 # Environment checks
 # ----------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 WP_USER = os.getenv("WORDPRESS_USERNAME")
 WP_PASS = os.getenv("WORDPRESS_APP_PASSWORD")
@@ -36,7 +36,8 @@ if missing:
     st.error("Missing environment variables: " + ", ".join(missing))
     st.stop()
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 
 # ----------------------------
@@ -75,10 +76,13 @@ def build_recent_posts_text(posts: list[dict]) -> str:
 def try_parse_json(text: str) -> dict:
     text = text.strip()
 
-    # remove markdown fences if model accidentally adds them
     if text.startswith("```"):
-        text = text.strip("`")
-        text = text.replace("json", "", 1).strip()
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
 
     return json.loads(text)
 
@@ -114,7 +118,7 @@ Return JSON with this structure:
 }}
 """
 
-    response = client.chat.completions.create(
+    response = openai_client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0.7,
         messages=[
@@ -143,8 +147,8 @@ Return JSON with this structure:
         }
 
 
-def write_article(final_title: str, final_topic: str, teen_style_notes: str, research_text: str) -> str:
-    prompt = f"""
+def build_article_prompt(final_title: str, final_topic: str, teen_style_notes: str, research_text: str) -> str:
+    return f"""
 Write a blog article using ONLY the research context below.
 
 Title:
@@ -163,23 +167,27 @@ Rules:
 - Use simple English
 - Easy to read for teenagers
 - Short paragraphs
-- Engaging introduction
+- Engaging but neutral article style
 - Use clear subheadings
 - Keep it factual
 - Do not invent facts not supported by the research context
 - Do not use heavy jargon
-- Make it feel modern and interesting
 - Include a short conclusion
 - Output clean HTML suitable for WordPress
 - Use tags like <h2>, <p>, <ul>, <li> where useful
 - Do not include <html>, <body>, or markdown code fences
 - Do not include fake citations like [1] or source lists at the end
+- Do not directly address the reader as "you"
 
 Research context:
 {research_text}
-"""
+""".strip()
 
-    response = client.chat.completions.create(
+
+def write_article_gpt(final_title: str, final_topic: str, teen_style_notes: str, research_text: str) -> str:
+    prompt = build_article_prompt(final_title, final_topic, teen_style_notes, research_text)
+
+    response = openai_client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0.7,
         messages=[
@@ -197,6 +205,29 @@ Research context:
     return (response.choices[0].message.content or "").strip()
 
 
+def write_article_claude(final_title: str, final_topic: str, teen_style_notes: str, research_text: str) -> str:
+    if not anthropic_client:
+        return "<p>Claude generation is unavailable because ANTHROPIC_API_KEY is missing.</p>"
+
+    prompt = build_article_prompt(final_title, final_topic, teen_style_notes, research_text)
+
+    response = anthropic_client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=2500,
+        temperature=0.7,
+        messages=[
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    parts = []
+    for block in response.content:
+        if getattr(block, "type", None) == "text":
+            parts.append(block.text)
+
+    return "\n".join(parts).strip()
+
+
 # ----------------------------
 # Sidebar
 # ----------------------------
@@ -204,8 +235,12 @@ with st.sidebar:
     st.subheader("Settings")
     max_results = st.slider("Tavily results", min_value=3, max_value=10, value=5)
     recent_post_limit = st.slider("Recent WordPress posts to compare", min_value=3, max_value=20, value=10)
-    auto_create_draft = st.checkbox("Create WordPress draft automatically", value=True)
     show_html_code = st.checkbox("Show raw HTML", value=False)
+    preferred_publish_version = st.selectbox(
+        "Default draft selection",
+        ["Do not create draft", "GPT", "Claude"],
+        index=0
+    )
 
 
 # ----------------------------
@@ -216,7 +251,7 @@ topic = st.text_input(
     value="Latest space discovery"
 )
 
-run_btn = st.button("Research, Write, and Draft")
+run_btn = st.button("Research, Compare, and Draft")
 
 
 if run_btn:
@@ -246,18 +281,26 @@ if run_btn:
         teen_style_notes = topic_choice.get("teen_style_notes", "Use simple, engaging language.")
         excerpt = topic_choice.get("excerpt", "")
 
-        with st.spinner("Writing article..."):
-            article_html = write_article(
+        with st.spinner("Writing GPT version..."):
+            article_html_gpt = write_article_gpt(
                 final_title=final_title,
                 final_topic=final_topic,
                 teen_style_notes=teen_style_notes,
                 research_text=research_text
             )
 
-        st.success("Article generated successfully.")
+        with st.spinner("Writing Claude version..."):
+            article_html_claude = write_article_claude(
+                final_title=final_title,
+                final_topic=final_topic,
+                teen_style_notes=teen_style_notes,
+                research_text=research_text
+            )
 
-        tab1, tab2, tab3, tab4 = st.tabs(
-            ["Chosen Topic", "Article Preview", "Research", "Recent Posts"]
+        st.success("Both article versions generated successfully.")
+
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(
+            ["Chosen Topic", "GPT Article", "Claude Article", "Research", "Recent Posts"]
         )
 
         with tab1:
@@ -268,16 +311,26 @@ if run_btn:
             st.write("**Excerpt:**", excerpt)
 
         with tab2:
-            st.subheader("Generated Article")
+            st.subheader("GPT Version")
 
             if show_html_code:
-                st.code(article_html, language="html")
+                st.code(article_html_gpt, language="html")
                 st.markdown("---")
 
             st.markdown("### Rendered Preview")
-            st.components.v1.html(article_html, height=700, scrolling=True)
+            st.components.v1.html(article_html_gpt, height=700, scrolling=True)
 
         with tab3:
+            st.subheader("Claude Version")
+
+            if show_html_code:
+                st.code(article_html_claude, language="html")
+                st.markdown("---")
+
+            st.markdown("### Rendered Preview")
+            st.components.v1.html(article_html_claude, height=700, scrolling=True)
+
+        with tab4:
             st.subheader("Web Research Results")
             for idx, item in enumerate(research_results, start=1):
                 st.markdown(f"**{idx}. {item.get('title', '')}**")
@@ -285,7 +338,7 @@ if run_btn:
                 st.write(item.get("content", ""))
                 st.markdown("---")
 
-        with tab4:
+        with tab5:
             st.subheader("Recent WordPress Posts")
             for p in recent_posts:
                 st.markdown(f"- **{p.get('title', '')}**")
@@ -293,20 +346,35 @@ if run_btn:
                 st.caption(p.get("date", ""))
                 st.markdown("---")
 
-        if auto_create_draft:
-            with st.spinner("Creating WordPress draft..."):
-                post = create_draft_post(
-                    title=final_title,
-                    content=article_html,
-                    excerpt=excerpt
-                )
+        st.markdown("## Choose version to send to WordPress")
 
-            st.success("Draft created in WordPress.")
-            st.write(f"**Post ID:** {post.get('id')}")
-            st.write(f"**Status:** {post.get('status')}")
-            st.write(f"**Title:** {post.get('title')}")
-            st.write(f"**Link:** {post.get('link')}")
-            st.json(post)
+        selected_version = st.radio(
+            "Which version should be drafted?",
+            ["Do not create draft", "GPT", "Claude"],
+            index=["Do not create draft", "GPT", "Claude"].index(preferred_publish_version)
+        )
+
+        selected_html = None
+        if selected_version == "GPT":
+            selected_html = article_html_gpt
+        elif selected_version == "Claude":
+            selected_html = article_html_claude
+
+        if selected_html:
+            if st.button("Create selected WordPress draft"):
+                with st.spinner("Creating WordPress draft..."):
+                    post = create_draft_post(
+                        title=final_title,
+                        content=selected_html,
+                        excerpt=excerpt
+                    )
+
+                st.success("Draft created in WordPress.")
+                st.write(f"**Post ID:** {post.get('id')}")
+                st.write(f"**Status:** {post.get('status')}")
+                st.write(f"**Title:** {post.get('title')}")
+                st.write(f"**Link:** {post.get('link')}")
+                st.json(post)
 
     except Exception as e:
         st.error(f"Error: {str(e)}")
