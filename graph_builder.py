@@ -12,27 +12,27 @@ from tools.wordpress_tools import (
 from tools.tavily_research import research_topic
 from tools.content_tools import (
     choose_best_topic_tool,
-    write_article_tool,
+    write_article_gpt_tool,
+    write_article_claude_tool,
 )
 
-# --- State ---
+
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
-# --- Tools ---
 tools = [
     get_recent_posts_tool,
     research_topic,
     choose_best_topic_tool,
-    write_article_tool,
+    write_article_gpt_tool,
+    write_article_claude_tool,
     create_draft_post_tool,
 ]
 
 tool_node = ToolNode(tools)
 
 
-# --- Graph builder ---
 def build_graph(llm):
     llm_with_tools = llm.bind_tools(tools)
 
@@ -49,12 +49,10 @@ def build_graph(llm):
         return END
 
     graph = StateGraph(ChatState)
-
     graph.add_node("chatbot", chatbot_node)
     graph.add_node("tools", tool_node)
 
     graph.set_entry_point("chatbot")
-
     graph.add_conditional_edges("chatbot", route_tools)
     graph.add_edge("tools", "chatbot")
 
