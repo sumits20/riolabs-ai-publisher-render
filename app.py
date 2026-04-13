@@ -10,17 +10,27 @@ from tools.wordpress_tools import get_recent_posts, create_draft_post
 
 st.set_page_config(page_title="AI WordPress Publisher", layout="wide")
 st.title("AI WordPress Publisher")
-st.caption("Research a topic, choose a better angle, generate GPT and Claude versions, then save the selected one to WordPress as a draft.")
+st.caption("Research a topic, choose a better angle, generate GPT and Claude versions, compare them, then save the selected one to WordPress as a draft.")
+
+
+# ----------------------------
+# Secret helper
+# ----------------------------
+def get_secret(key: str, default=None):
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.getenv(key, default)
 
 
 # ----------------------------
 # Environment checks
 # ----------------------------
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-WP_USER = os.getenv("WORDPRESS_USERNAME")
-WP_PASS = os.getenv("WORDPRESS_APP_PASSWORD")
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
+ANTHROPIC_API_KEY = get_secret("ANTHROPIC_API_KEY")
+TAVILY_API_KEY = get_secret("TAVILY_API_KEY")
+WP_USER = get_secret("WORDPRESS_USERNAME")
+WP_PASS = get_secret("WORDPRESS_APP_PASSWORD")
 
 missing = []
 if not OPENAI_API_KEY:
@@ -38,6 +48,29 @@ if missing:
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+
+
+# ----------------------------
+# Session state defaults
+# ----------------------------
+DEFAULTS = {
+    "generated": False,
+    "final_title": "",
+    "final_topic": "",
+    "why_selected": "",
+    "teen_style_notes": "",
+    "excerpt": "",
+    "article_html_gpt": "",
+    "article_html_claude": "",
+    "research_results": [],
+    "recent_posts": [],
+    "judge_result": None,
+    "selected_version": "Do not create draft",
+}
+
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
 # ----------------------------
@@ -228,6 +261,111 @@ def write_article_claude(final_title: str, final_topic: str, teen_style_notes: s
     return "\n".join(parts).strip()
 
 
+def judge_articles(final_title: str, final_topic: str, research_text: str, article_html_gpt: str, article_html_claude: str) -> dict:
+    """
+    Uses GPT to compare both generated articles and choose the better one.
+    Returns JSON with winner, reason, and scores.
+    """
+    prompt = f"""
+You are evaluating two blog article drafts for WordPress.
+
+Title:
+{final_title}
+
+Chosen topic:
+{final_topic}
+
+Research context:
+{research_text}
+
+Draft A (GPT):
+{article_html_gpt}
+
+Draft B (Claude):
+{article_html_claude}
+
+Evaluate both drafts using these criteria:
+1. Factual accuracy based on research context
+2. Clarity for Indian teenagers
+3. Structure and readability
+4. WordPress suitability
+5. Engagement without sounding childish
+6. Avoiding unsupported claims
+
+Return STRICT JSON only:
+{{
+  "winner": "GPT or Claude",
+  "reason": "Short explanation",
+  "scores": {{
+    "GPT": {{
+      "accuracy": 0,
+      "clarity": 0,
+      "structure": 0,
+      "wordpress_readiness": 0,
+      "engagement": 0,
+      "total": 0
+    }},
+    "Claude": {{
+      "accuracy": 0,
+      "clarity": 0,
+      "structure": 0,
+      "wordpress_readiness": 0,
+      "engagement": 0,
+      "total": 0
+    }}
+  }}
+}}
+"""
+
+    response = openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.2,
+        messages=[
+            {
+                "role": "system",
+                "content": "Return only valid JSON. No markdown fences. No explanation outside JSON."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    )
+
+    raw_text = response.choices[0].message.content or ""
+
+    try:
+        return try_parse_json(raw_text)
+    except Exception:
+        return {
+            "winner": "GPT",
+            "reason": "Fallback winner because judge JSON parsing failed.",
+            "scores": {
+                "GPT": {
+                    "accuracy": 0,
+                    "clarity": 0,
+                    "structure": 0,
+                    "wordpress_readiness": 0,
+                    "engagement": 0,
+                    "total": 0
+                },
+                "Claude": {
+                    "accuracy": 0,
+                    "clarity": 0,
+                    "structure": 0,
+                    "wordpress_readiness": 0,
+                    "engagement": 0,
+                    "total": 0
+                }
+            }
+        }
+
+
+def clear_results():
+    for k, v in DEFAULTS.items():
+        st.session_state[k] = v
+
+
 # ----------------------------
 # Sidebar
 # ----------------------------
@@ -236,11 +374,18 @@ with st.sidebar:
     max_results = st.slider("Tavily results", min_value=3, max_value=10, value=5)
     recent_post_limit = st.slider("Recent WordPress posts to compare", min_value=3, max_value=20, value=10)
     show_html_code = st.checkbox("Show raw HTML", value=False)
+    auto_judge = st.checkbox("Let AI compare GPT vs Claude automatically", value=False)
+    auto_pick_winner = st.checkbox("Automatically select the judged winner", value=False)
     preferred_publish_version = st.selectbox(
         "Default draft selection",
         ["Do not create draft", "GPT", "Claude"],
         index=0
     )
+
+    st.markdown("---")
+    if st.button("Clear generated results"):
+        clear_results()
+        st.rerun()
 
 
 # ----------------------------
@@ -297,76 +442,134 @@ if run_btn:
                 research_text=research_text
             )
 
+        judge_result = None
+        if auto_judge:
+            with st.spinner("Judging both versions..."):
+                judge_result = judge_articles(
+                    final_title=final_title,
+                    final_topic=final_topic,
+                    research_text=research_text,
+                    article_html_gpt=article_html_gpt,
+                    article_html_claude=article_html_claude,
+                )
+
+        st.session_state.generated = True
+        st.session_state.final_title = final_title
+        st.session_state.final_topic = final_topic
+        st.session_state.why_selected = why_selected
+        st.session_state.teen_style_notes = teen_style_notes
+        st.session_state.excerpt = excerpt
+        st.session_state.article_html_gpt = article_html_gpt
+        st.session_state.article_html_claude = article_html_claude
+        st.session_state.research_results = research_results
+        st.session_state.recent_posts = recent_posts
+        st.session_state.judge_result = judge_result
+
+        if auto_judge and auto_pick_winner and judge_result:
+            winner = judge_result.get("winner", "").strip()
+            if winner in ["GPT", "Claude"]:
+                st.session_state.selected_version = winner
+            else:
+                st.session_state.selected_version = preferred_publish_version
+        else:
+            st.session_state.selected_version = preferred_publish_version
+
         st.success("Both article versions generated successfully.")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(
-            ["Chosen Topic", "GPT Article", "Claude Article", "Research", "Recent Posts"]
-        )
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
 
-        with tab1:
-            st.subheader(final_title)
-            st.write("**Chosen angle:**", final_topic)
-            st.write("**Why selected:**", why_selected)
-            st.write("**Tone guidance:**", teen_style_notes)
-            st.write("**Excerpt:**", excerpt)
 
-        with tab2:
-            st.subheader("GPT Version")
+# ----------------------------
+# Render saved results
+# ----------------------------
+if st.session_state.generated:
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["Chosen Topic", "GPT Article", "Claude Article", "Research", "Recent Posts", "Judge Result"]
+    )
 
-            if show_html_code:
-                st.code(article_html_gpt, language="html")
-                st.markdown("---")
+    with tab1:
+        st.subheader(st.session_state.final_title)
+        st.write("**Chosen angle:**", st.session_state.final_topic)
+        st.write("**Why selected:**", st.session_state.why_selected)
+        st.write("**Tone guidance:**", st.session_state.teen_style_notes)
+        st.write("**Excerpt:**", st.session_state.excerpt)
 
-            st.markdown("### Rendered Preview")
-            st.components.v1.html(article_html_gpt, height=700, scrolling=True)
+    with tab2:
+        st.subheader("GPT Version")
+        if show_html_code:
+            st.code(st.session_state.article_html_gpt, language="html")
+            st.markdown("---")
+        st.markdown("### Rendered Preview")
+        st.components.v1.html(st.session_state.article_html_gpt, height=700, scrolling=True)
 
-        with tab3:
-            st.subheader("Claude Version")
+    with tab3:
+        st.subheader("Claude Version")
+        if show_html_code:
+            st.code(st.session_state.article_html_claude, language="html")
+            st.markdown("---")
+        st.markdown("### Rendered Preview")
+        st.components.v1.html(st.session_state.article_html_claude, height=700, scrolling=True)
 
-            if show_html_code:
-                st.code(article_html_claude, language="html")
-                st.markdown("---")
+    with tab4:
+        st.subheader("Web Research Results")
+        for idx, item in enumerate(st.session_state.research_results, start=1):
+            st.markdown(f"**{idx}. {item.get('title', '')}**")
+            st.write(item.get("url", ""))
+            st.write(item.get("content", ""))
+            st.markdown("---")
 
-            st.markdown("### Rendered Preview")
-            st.components.v1.html(article_html_claude, height=700, scrolling=True)
+    with tab5:
+        st.subheader("Recent WordPress Posts")
+        for p in st.session_state.recent_posts:
+            st.markdown(f"- **{p.get('title', '')}**")
+            st.write(p.get("link", ""))
+            st.caption(p.get("date", ""))
+            st.markdown("---")
 
-        with tab4:
-            st.subheader("Web Research Results")
-            for idx, item in enumerate(research_results, start=1):
-                st.markdown(f"**{idx}. {item.get('title', '')}**")
-                st.write(item.get("url", ""))
-                st.write(item.get("content", ""))
-                st.markdown("---")
+    with tab6:
+        st.subheader("AI Judge")
+        if st.session_state.judge_result:
+            st.json(st.session_state.judge_result)
+            st.success(
+                f"Recommended winner: {st.session_state.judge_result.get('winner', 'Unknown')}"
+            )
+            st.write(st.session_state.judge_result.get("reason", ""))
+        else:
+            st.info("Judge was not run for this generation.")
 
-        with tab5:
-            st.subheader("Recent WordPress Posts")
-            for p in recent_posts:
-                st.markdown(f"- **{p.get('title', '')}**")
-                st.write(p.get("link", ""))
-                st.caption(p.get("date", ""))
-                st.markdown("---")
+    st.markdown("## Choose version to send to WordPress")
 
-        st.markdown("## Choose version to send to WordPress")
+    options = ["Do not create draft", "GPT", "Claude"]
+    current_selection = st.session_state.selected_version
+    if current_selection not in options:
+        current_selection = "Do not create draft"
 
-        selected_version = st.radio(
-            "Which version should be drafted?",
-            ["Do not create draft", "GPT", "Claude"],
-            index=["Do not create draft", "GPT", "Claude"].index(preferred_publish_version)
-        )
+    selected_version = st.radio(
+        "Which version should be drafted?",
+        options,
+        index=options.index(current_selection),
+        key="selected_version_radio"
+    )
 
-        selected_html = None
-        if selected_version == "GPT":
-            selected_html = article_html_gpt
-        elif selected_version == "Claude":
-            selected_html = article_html_claude
+    st.session_state.selected_version = selected_version
 
-        if selected_html:
-            if st.button("Create selected WordPress draft"):
+    selected_html = None
+    if selected_version == "GPT":
+        selected_html = st.session_state.article_html_gpt
+    elif selected_version == "Claude":
+        selected_html = st.session_state.article_html_claude
+
+    if selected_html:
+        st.info(f"Selected version: {selected_version}")
+
+        if st.button("Create selected WordPress draft"):
+            try:
                 with st.spinner("Creating WordPress draft..."):
                     post = create_draft_post(
-                        title=final_title,
+                        title=st.session_state.final_title,
                         content=selected_html,
-                        excerpt=excerpt
+                        excerpt=st.session_state.excerpt
                     )
 
                 st.success("Draft created in WordPress.")
@@ -376,5 +579,5 @@ if run_btn:
                 st.write(f"**Link:** {post.get('link')}")
                 st.json(post)
 
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
+            except Exception as e:
+                st.error(f"Draft creation failed: {str(e)}")
