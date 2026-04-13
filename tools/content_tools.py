@@ -49,13 +49,13 @@ Rules:
 - Write in a neutral article style
 - Do NOT address the reader directly as "you"
 - Do NOT use phrases like "Imagine", "Have you ever", "Let's", or "Hey"
-- Use a clear structure:
+- Determine structures:
   - Introduction
   - 2 to 4 meaningful subheadings
-  - Short conclusion
-- Keep paragraphs moderate and readable
-- Use only facts supported by the research context
-- Do not invent facts
+  - medium size article
+  - Comprehenssive conclusion
+- Good paragraphs moderate and readable
+- Use facts supported by the research context
 - No fake citations
 - Output clean HTML only
 - Use tags like <h2>, <p>, <ul>, <li> where useful
