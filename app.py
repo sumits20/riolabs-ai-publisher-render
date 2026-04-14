@@ -8,6 +8,7 @@ from tools.tavily_research import tavily_search
 from tools.wordpress_tools import (
     get_recent_posts,
     create_draft_post,
+    update_post,
     upload_media_to_wordpress,
 )
 from tools.image_tools import (
@@ -24,9 +25,6 @@ st.caption(
 )
 
 
-# ----------------------------
-# Secret helper
-# ----------------------------
 def get_secret(key: str, default=None):
     try:
         return st.secrets[key]
@@ -34,9 +32,6 @@ def get_secret(key: str, default=None):
         return os.getenv(key, default)
 
 
-# ----------------------------
-# Environment checks
-# ----------------------------
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = get_secret("ANTHROPIC_API_KEY")
 TAVILY_API_KEY = get_secret("TAVILY_API_KEY")
@@ -65,9 +60,6 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 
-# ----------------------------
-# Session state defaults
-# ----------------------------
 DEFAULTS = {
     "generated": False,
     "final_title": "",
@@ -91,9 +83,6 @@ for k, v in DEFAULTS.items():
         st.session_state[k] = v
 
 
-# ----------------------------
-# Helper functions
-# ----------------------------
 def clear_results():
     for k, v in DEFAULTS.items():
         st.session_state[k] = v
@@ -220,9 +209,14 @@ Style guidance:
 {teen_style_notes}
 
 Rules:
+- Use simple English
+- Easy to read for teenagers
+- Short paragraphs
 - Engaging but neutral article style
+- Use clear subheadings
 - Keep it factual
 - Do not invent facts not supported by the research context
+- Do not use heavy jargon
 - Include a short conclusion
 - Output clean HTML suitable for WordPress
 - Use tags like <h2>, <p>, <ul>, <li> where useful
@@ -361,9 +355,6 @@ Return STRICT JSON only:
         }
 
 
-# ----------------------------
-# Sidebar
-# ----------------------------
 with st.sidebar:
     st.subheader("Settings")
     max_results = st.slider("Tavily results", min_value=3, max_value=10, value=5)
@@ -383,7 +374,7 @@ with st.sidebar:
     auto_generate_image = st.checkbox("Generate featured image with Grok", value=True)
     upload_image_to_wp = st.checkbox("Upload image to WordPress Media", value=True)
     set_as_featured_image = st.checkbox("Use uploaded image as featured image", value=True)
-    insert_image_into_article = st.checkbox("Insert image at top of article HTML", value=True)
+    insert_image_into_article = st.checkbox("Insert image at top of article HTML", value=False)
     image_aspect_ratio = st.selectbox(
         "Image aspect ratio",
         ["16:9", "4:3", "3:2", "1:1"],
@@ -396,12 +387,8 @@ with st.sidebar:
         st.rerun()
 
 
-# ----------------------------
-# Main form
-# ----------------------------
 topic = st.text_input("Enter a topic", value="Latest space discovery")
 run_btn = st.button("Research, Compare, Generate Image, and Draft")
-
 
 if run_btn:
     if not topic.strip():
@@ -516,9 +503,6 @@ if run_btn:
         st.error(f"Error: {str(e)}")
 
 
-# ----------------------------
-# Render saved results
-# ----------------------------
 if st.session_state.generated:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
         ["Chosen Topic", "GPT Article", "Claude Article", "Research", "Recent Posts", "Judge Result", "Image"]
@@ -580,7 +564,11 @@ if st.session_state.generated:
             st.write("**Style notes:**", st.session_state.image_prompt_data.get("style_notes", ""))
 
         if st.session_state.generated_image:
-            st.image(st.session_state.generated_image["image_bytes"], caption="Generated featured image", use_container_width=True)
+            st.image(
+                st.session_state.generated_image["image_bytes"],
+                caption="Generated featured image",
+                use_container_width=True,
+            )
 
         if st.session_state.uploaded_media:
             st.success(f"Image uploaded to WordPress Media. Media ID: {st.session_state.uploaded_media.get('id')}")
@@ -614,41 +602,64 @@ if st.session_state.generated:
         selected_html = st.session_state.article_html_claude
 
     if selected_html:
+        uploaded_media = st.session_state.uploaded_media
         featured_media_id = None
-        if st.session_state.uploaded_media and st.session_state.uploaded_media.get("id"):
-            featured_media_id = st.session_state.uploaded_media["id"]
+        image_url = None
+        alt_text = ""
 
-        final_html = selected_html
-        if insert_image_into_article and st.session_state.uploaded_media and st.session_state.uploaded_media.get("source_url"):
-            image_url = st.session_state.uploaded_media["source_url"]
-            alt_text = ""
-            if st.session_state.image_prompt_data:
-                alt_text = st.session_state.image_prompt_data.get("alt_text", "")
+        if uploaded_media:
+            featured_media_id = uploaded_media.get("id")
+            image_url = uploaded_media.get("source_url")
 
-            image_block = (
-                f'<figure><img src="{image_url}" alt="{alt_text}" />'
-                f"</figure>"
-            )
-            final_html = image_block + "\n\n" + final_html
+        if st.session_state.image_prompt_data:
+            alt_text = st.session_state.image_prompt_data.get("alt_text", "")
 
         st.info(f"Selected version: {selected_version}")
+        st.write("Featured media ID:", featured_media_id)
+        st.write("Will set featured image:", set_as_featured_image and bool(featured_media_id))
+        st.write("Will insert image into content:", insert_image_into_article and bool(image_url))
 
         if st.button("Create selected WordPress draft"):
             try:
-                with st.spinner("Creating WordPress draft..."):
+                with st.spinner("Step 1/3: Creating text-only draft..."):
                     post = create_draft_post(
                         title=st.session_state.final_title,
-                        content=final_html,
+                        content=selected_html,
                         excerpt=st.session_state.excerpt,
-                        featured_media=featured_media_id if set_as_featured_image else None,
                     )
 
+                post_id = post["id"]
+
+                with st.spinner("Step 2/3: Updating featured image..."):
+                    if set_as_featured_image and featured_media_id:
+                        update_post(
+                            post_id=post_id,
+                            featured_media=featured_media_id,
+                        )
+
+                final_updated_post = post
+
+                with st.spinner("Step 3/3: Updating content with inline image..."):
+                    if insert_image_into_article and image_url:
+                        image_block = f'<p><img src="{image_url}" alt="{alt_text}"></p>'
+                        final_html = image_block + "\n" + selected_html
+
+                        final_updated_post = update_post(
+                            post_id=post_id,
+                            content=final_html,
+                        )
+                    elif set_as_featured_image and featured_media_id:
+                        final_updated_post = update_post(
+                            post_id=post_id,
+                            featured_media=featured_media_id,
+                        )
+
                 st.success("Draft created in WordPress.")
-                st.write(f"**Post ID:** {post.get('id')}")
-                st.write(f"**Status:** {post.get('status')}")
-                st.write(f"**Title:** {post.get('title')}")
-                st.write(f"**Link:** {post.get('link')}")
-                st.json(post["raw"])
+                st.write(f"**Post ID:** {final_updated_post.get('id')}")
+                st.write(f"**Status:** {final_updated_post.get('status')}")
+                st.write(f"**Title:** {final_updated_post.get('title')}")
+                st.write(f"**Link:** {final_updated_post.get('link')}")
+                st.json(final_updated_post["raw"])
 
             except Exception as e:
                 st.error(f"Draft creation failed: {str(e)}")
