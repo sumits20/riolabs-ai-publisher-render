@@ -1,81 +1,180 @@
-# tools/image_tools.py
-
+import json
 import os
-import base64
+from typing import Any, Dict, Optional
+
+import requests
 from openai import OpenAI
-from langchain_core.tools import tool
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+try:
+    import streamlit as st
+except Exception:
+    st = None
 
 
-def build_featured_image_prompt(title: str, topic: str, article_excerpt: str = "") -> str:
+def get_secret(key: str, default: Optional[str] = None) -> Optional[str]:
+    if st is not None:
+        try:
+            return st.secrets[key]
+        except Exception:
+            pass
+    return os.getenv(key, default)
+
+
+def try_parse_json(text: str) -> Dict[str, Any]:
+    text = text.strip()
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    return json.loads(text)
+
+
+def generate_image_prompt(
+    openai_client: OpenAI,
+    final_title: str,
+    final_topic: str,
+    excerpt: str,
+    research_text: str,
+) -> Dict[str, str]:
     """
-    Create a clean featured-image prompt for a science/history/news article.
+    Ask GPT to produce a strong editorial image prompt for the chosen article.
     """
-    return f"""
-Create a high-quality featured image for a blog article.
+    prompt = f"""
+You are creating a blog header image prompt for a science, discovery, history, or news article.
 
-Article title:
-{title}
+Title:
+{final_title}
 
-Article topic:
-{topic}
+Chosen topic:
+{final_topic}
 
-Article excerpt:
-{article_excerpt}
+Excerpt:
+{excerpt}
 
-Style requirements:
-- modern editorial illustration or realistic digital art
-- visually striking
-- suitable for a science, discovery, history, or educational news blog
-- appealing to Indian teenagers
-- bright, engaging, clean composition
-- no text, no captions, no labels, no watermark
-- landscape orientation
-- suitable as a WordPress featured image
+Research context:
+{research_text}
+
+Requirements:
+- Create a realistic, high-quality editorial blog image prompt
+- Suitable for Indian teenagers, but not childish
+- No text in the image
+- No watermark
+- No logos
+- No UI elements
+- Prefer one strong clear visual concept
+- Keep it factual in mood
+- Good as a website featured image / hero image
+- Return STRICT JSON only
+
+Return this exact JSON shape:
+{{
+  "image_prompt": "Detailed prompt for image generation",
+  "alt_text": "Short accessible alt text",
+  "caption": "Short caption for WordPress",
+  "style_notes": "Short style note"
+}}
 """.strip()
 
+    response = openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.6,
+        messages=[
+            {
+                "role": "system",
+                "content": "Return only valid JSON. No markdown fences. No explanation outside JSON."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+    )
 
-def generate_featured_image_bytes(
-    title: str,
-    topic: str,
-    article_excerpt: str = "",
-    size: str = "1536x1024"
-) -> dict:
+    raw = response.choices[0].message.content or ""
+
+    try:
+        return try_parse_json(raw)
+    except Exception:
+        return {
+            "image_prompt": (
+                f"Editorial science blog header image for '{final_title}', "
+                f"showing {final_topic}, realistic lighting, clean composition, "
+                "high detail, no text, no watermark, no logo."
+            ),
+            "alt_text": final_title,
+            "caption": final_title,
+            "style_notes": "Realistic editorial illustration"
+        }
+
+
+def generate_grok_image(
+    prompt: str,
+    aspect_ratio: str = "16:9",
+    timeout: int = 180,
+) -> Dict[str, Any]:
     """
-    Generate an image using OpenAI and return bytes plus metadata.
+    Generate an image using xAI's image model through the OpenAI-compatible SDK.
+    Returns:
+      {
+        "image_url": str,
+        "image_bytes": bytes,
+        "content_type": str,
+        "filename": str
+      }
     """
-    prompt = build_featured_image_prompt(
-        title=title,
-        topic=topic,
-        article_excerpt=article_excerpt
+    xai_api_key = get_secret("XAI_API_KEY")
+    if not xai_api_key:
+        raise ValueError("Missing XAI_API_KEY")
+
+    client = OpenAI(
+        base_url="https://api.x.ai/v1",
+        api_key=xai_api_key,
     )
 
     response = client.images.generate(
-        model="gpt-image-1",
+        model="grok-imagine-image",
         prompt=prompt,
-        size=size
+        size=aspect_ratio,
     )
 
-    image_b64 = response.data[0].b64_json
-    image_bytes = base64.b64decode(image_b64)
+    if not response.data or not response.data[0]:
+        raise ValueError("No image returned from xAI")
 
-    return {
-        "prompt": prompt,
-        "image_bytes": image_bytes,
-        "mime_type": "image/png",
-        "filename": "featured_image.png"
-    }
+    image_url = getattr(response.data[0], "url", None)
+    b64_json = getattr(response.data[0], "b64_json", None)
 
+    if image_url:
+        img_resp = requests.get(image_url, timeout=timeout)
+        img_resp.raise_for_status()
 
-@tool
-def make_image_prompt_tool(title: str, topic: str, article_excerpt: str = "") -> str:
-    """
-    Create a featured-image prompt for a blog article.
-    Use this when you want to review or inspect the image prompt before generating the image.
-    """
-    return build_featured_image_prompt(
-        title=title,
-        topic=topic,
-        article_excerpt=article_excerpt
-    )
+        content_type = img_resp.headers.get("Content-Type", "image/png")
+        ext = ".png"
+        if "jpeg" in content_type or "jpg" in content_type:
+            ext = ".jpg"
+        elif "webp" in content_type:
+            ext = ".webp"
+
+        return {
+            "image_url": image_url,
+            "image_bytes": img_resp.content,
+            "content_type": content_type,
+            "filename": f"generated_featured_image{ext}",
+        }
+
+    if b64_json:
+        import base64
+
+        image_bytes = base64.b64decode(b64_json)
+        return {
+            "image_url": None,
+            "image_bytes": image_bytes,
+            "content_type": "image/png",
+            "filename": "generated_featured_image.png",
+        }
+
+    raise ValueError("xAI response did not include a URL or base64 image payload")
