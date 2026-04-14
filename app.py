@@ -209,15 +209,9 @@ Style guidance:
 {teen_style_notes}
 
 Rules:
-- Use simple English
-- Easy to read for teenagers
-- Short paragraphs
 - Engaging but neutral article style
-- Use clear subheadings
 - Keep it factual
-- Do not invent facts not supported by the research context
-- Do not use heavy jargon
-- Include a short conclusion
+- Include a conclusion
 - Output clean HTML suitable for WordPress
 - Use tags like <h2>, <p>, <ul>, <li> where useful
 - Do not include <html>, <body>, or markdown code fences
