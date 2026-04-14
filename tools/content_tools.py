@@ -45,18 +45,10 @@ Style notes:
 {teen_style_notes}
 
 Rules:
-- Use simple English suitable for teenagers
 - Write in a neutral article style
 - Do NOT address the reader directly as "you"
 - Do NOT use phrases like "Imagine", "Have you ever", "Let's", or "Hey"
-- Determine structures:
-  - Introduction
-  - 2 to 4 meaningful subheadings
-  - medium size article
-  - Comprehenssive conclusion
-- Good paragraphs moderate and readable
 - Use facts supported by the research context
-- No fake citations
 - Output clean HTML only
 - Use tags like <h2>, <p>, <ul>, <li> where useful
 - Do not include markdown or code fences
@@ -90,8 +82,7 @@ Task:
 - Choose the best article angle
 - Avoid repeating existing recent blog topics
 - Keep it factual and easy to understand
-- Prefer a focused angle instead of a broad topic
-- Make it attractive for Indian teenagers
+- Borad topic keeping fact intact
 - Return STRICT JSON only
 
 Return this exact JSON shape:
