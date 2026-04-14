@@ -5,12 +5,23 @@ from openai import OpenAI
 from anthropic import Anthropic
 
 from tools.tavily_research import tavily_search
-from tools.wordpress_tools import get_recent_posts, create_draft_post
+from tools.wordpress_tools import (
+    get_recent_posts,
+    create_draft_post,
+    upload_media_to_wordpress,
+)
+from tools.image_tools import (
+    generate_image_prompt,
+    generate_grok_image,
+)
 
 
 st.set_page_config(page_title="AI WordPress Publisher", layout="wide")
 st.title("AI WordPress Publisher")
-st.caption("Research a topic, choose a better angle, generate GPT and Claude versions, compare them, then save the selected one to WordPress as a draft.")
+st.caption(
+    "Research a topic, choose a better angle, generate GPT and Claude versions, "
+    "generate a featured image with Grok, then save the selected result to WordPress as a draft."
+)
 
 
 # ----------------------------
@@ -29,6 +40,8 @@ def get_secret(key: str, default=None):
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = get_secret("ANTHROPIC_API_KEY")
 TAVILY_API_KEY = get_secret("TAVILY_API_KEY")
+XAI_API_KEY = get_secret("XAI_API_KEY")
+WP_BASE_URL = get_secret("WORDPRESS_BASE_URL")
 WP_USER = get_secret("WORDPRESS_USERNAME")
 WP_PASS = get_secret("WORDPRESS_APP_PASSWORD")
 
@@ -37,6 +50,8 @@ if not OPENAI_API_KEY:
     missing.append("OPENAI_API_KEY")
 if not TAVILY_API_KEY:
     missing.append("TAVILY_API_KEY")
+if not WP_BASE_URL:
+    missing.append("WORDPRESS_BASE_URL")
 if not WP_USER:
     missing.append("WORDPRESS_USERNAME")
 if not WP_PASS:
@@ -66,6 +81,9 @@ DEFAULTS = {
     "recent_posts": [],
     "judge_result": None,
     "selected_version": "Do not create draft",
+    "image_prompt_data": None,
+    "generated_image": None,
+    "uploaded_media": None,
 }
 
 for k, v in DEFAULTS.items():
@@ -76,6 +94,11 @@ for k, v in DEFAULTS.items():
 # ----------------------------
 # Helper functions
 # ----------------------------
+def clear_results():
+    for k, v in DEFAULTS.items():
+        st.session_state[k] = v
+
+
 def build_research_text(results: list[dict]) -> str:
     if not results:
         return "No research results found."
@@ -197,9 +220,15 @@ Style guidance:
 {teen_style_notes}
 
 Rules:
+- Use simple English
+- Easy to read for teenagers
+- Short paragraphs
 - Engaging but neutral article style
+- Use clear subheadings
 - Keep it factual
-- Include a conclusion
+- Do not invent facts not supported by the research context
+- Do not use heavy jargon
+- Include a short conclusion
 - Output clean HTML suitable for WordPress
 - Use tags like <h2>, <p>, <ul>, <li> where useful
 - Do not include <html>, <body>, or markdown code fences
@@ -256,10 +285,6 @@ def write_article_claude(final_title: str, final_topic: str, teen_style_notes: s
 
 
 def judge_articles(final_title: str, final_topic: str, research_text: str, article_html_gpt: str, article_html_claude: str) -> dict:
-    """
-    Uses GPT to compare both generated articles and choose the better one.
-    Returns JSON with winner, reason, and scores.
-    """
     prompt = f"""
 You are evaluating two blog article drafts for WordPress.
 
@@ -280,9 +305,11 @@ Draft B (Claude):
 
 Evaluate both drafts using these criteria:
 1. Factual accuracy based on research context
-2. Structure and readability
-3. WordPress suitability
-4. Engagement without sounding childish
+2. Clarity for Indian teenagers
+3. Structure and readability
+4. WordPress suitability
+5. Engagement without sounding childish
+6. Avoiding unsupported claims
 
 Return STRICT JSON only:
 {{
@@ -333,29 +360,10 @@ Return STRICT JSON only:
             "winner": "GPT",
             "reason": "Fallback winner because judge JSON parsing failed.",
             "scores": {
-                "GPT": {
-                    "accuracy": 0,
-                    "clarity": 0,
-                    "structure": 0,
-                    "wordpress_readiness": 0,
-                    "engagement": 0,
-                    "total": 0
-                },
-                "Claude": {
-                    "accuracy": 0,
-                    "clarity": 0,
-                    "structure": 0,
-                    "wordpress_readiness": 0,
-                    "engagement": 0,
-                    "total": 0
-                }
-            }
+                "GPT": {"accuracy": 0, "clarity": 0, "structure": 0, "wordpress_readiness": 0, "engagement": 0, "total": 0},
+                "Claude": {"accuracy": 0, "clarity": 0, "structure": 0, "wordpress_readiness": 0, "engagement": 0, "total": 0},
+            },
         }
-
-
-def clear_results():
-    for k, v in DEFAULTS.items():
-        st.session_state[k] = v
 
 
 # ----------------------------
@@ -366,11 +374,24 @@ with st.sidebar:
     max_results = st.slider("Tavily results", min_value=3, max_value=10, value=5)
     recent_post_limit = st.slider("Recent WordPress posts to compare", min_value=3, max_value=20, value=10)
     show_html_code = st.checkbox("Show raw HTML", value=False)
-    auto_judge = st.checkbox("Let AI compare GPT vs Claude automatically", value=False)
-    auto_pick_winner = st.checkbox("Automatically select the judged winner", value=False)
+
+    st.markdown("### Article selection")
+    auto_judge = st.checkbox("Let AI compare GPT vs Claude automatically", value=True)
+    auto_pick_winner = st.checkbox("Automatically select the judged winner", value=True)
     preferred_publish_version = st.selectbox(
         "Default draft selection",
         ["Do not create draft", "GPT", "Claude"],
+        index=0
+    )
+
+    st.markdown("### Image generation")
+    auto_generate_image = st.checkbox("Generate featured image with Grok", value=True)
+    upload_image_to_wp = st.checkbox("Upload image to WordPress Media", value=True)
+    set_as_featured_image = st.checkbox("Use uploaded image as featured image", value=True)
+    insert_image_into_article = st.checkbox("Insert image at top of article HTML", value=True)
+    image_aspect_ratio = st.selectbox(
+        "Image aspect ratio",
+        ["16:9", "4:3", "3:2", "1:1"],
         index=0
     )
 
@@ -383,12 +404,8 @@ with st.sidebar:
 # ----------------------------
 # Main form
 # ----------------------------
-topic = st.text_input(
-    "Enter a topic",
-    value="Latest space discovery"
-)
-
-run_btn = st.button("Research, Compare, and Draft")
+topic = st.text_input("Enter a topic", value="Latest space discovery")
+run_btn = st.button("Research, Compare, Generate Image, and Draft")
 
 
 if run_btn:
@@ -445,6 +462,43 @@ if run_btn:
                     article_html_claude=article_html_claude,
                 )
 
+        selected_version = preferred_publish_version
+        if auto_judge and auto_pick_winner and judge_result:
+            winner = judge_result.get("winner", "").strip()
+            if winner in ["GPT", "Claude"]:
+                selected_version = winner
+
+        image_prompt_data = None
+        generated_image = None
+        uploaded_media = None
+
+        if auto_generate_image:
+            with st.spinner("Creating image prompt..."):
+                image_prompt_data = generate_image_prompt(
+                    openai_client=openai_client,
+                    final_title=final_title,
+                    final_topic=final_topic,
+                    excerpt=excerpt,
+                    research_text=research_text,
+                )
+
+            if XAI_API_KEY:
+                with st.spinner("Generating image with Grok..."):
+                    generated_image = generate_grok_image(
+                        prompt=image_prompt_data["image_prompt"],
+                        aspect_ratio=image_aspect_ratio,
+                    )
+
+                if upload_image_to_wp and generated_image:
+                    with st.spinner("Uploading image to WordPress..."):
+                        uploaded_media = upload_media_to_wordpress(
+                            image_bytes=generated_image["image_bytes"],
+                            filename=generated_image["filename"],
+                            content_type=generated_image["content_type"],
+                            alt_text=image_prompt_data.get("alt_text", ""),
+                            caption=image_prompt_data.get("caption", ""),
+                        )
+
         st.session_state.generated = True
         st.session_state.final_title = final_title
         st.session_state.final_topic = final_topic
@@ -456,17 +510,12 @@ if run_btn:
         st.session_state.research_results = research_results
         st.session_state.recent_posts = recent_posts
         st.session_state.judge_result = judge_result
+        st.session_state.selected_version = selected_version
+        st.session_state.image_prompt_data = image_prompt_data
+        st.session_state.generated_image = generated_image
+        st.session_state.uploaded_media = uploaded_media
 
-        if auto_judge and auto_pick_winner and judge_result:
-            winner = judge_result.get("winner", "").strip()
-            if winner in ["GPT", "Claude"]:
-                st.session_state.selected_version = winner
-            else:
-                st.session_state.selected_version = preferred_publish_version
-        else:
-            st.session_state.selected_version = preferred_publish_version
-
-        st.success("Both article versions generated successfully.")
+        st.success("Generation completed successfully.")
 
     except Exception as e:
         st.error(f"Error: {str(e)}")
@@ -476,8 +525,8 @@ if run_btn:
 # Render saved results
 # ----------------------------
 if st.session_state.generated:
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        ["Chosen Topic", "GPT Article", "Claude Article", "Research", "Recent Posts", "Judge Result"]
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+        ["Chosen Topic", "GPT Article", "Claude Article", "Research", "Recent Posts", "Judge Result", "Image"]
     )
 
     with tab1:
@@ -492,7 +541,6 @@ if st.session_state.generated:
         if show_html_code:
             st.code(st.session_state.article_html_gpt, language="html")
             st.markdown("---")
-        st.markdown("### Rendered Preview")
         st.components.v1.html(st.session_state.article_html_gpt, height=700, scrolling=True)
 
     with tab3:
@@ -500,7 +548,6 @@ if st.session_state.generated:
         if show_html_code:
             st.code(st.session_state.article_html_claude, language="html")
             st.markdown("---")
-        st.markdown("### Rendered Preview")
         st.components.v1.html(st.session_state.article_html_claude, height=700, scrolling=True)
 
     with tab4:
@@ -523,12 +570,32 @@ if st.session_state.generated:
         st.subheader("AI Judge")
         if st.session_state.judge_result:
             st.json(st.session_state.judge_result)
-            st.success(
-                f"Recommended winner: {st.session_state.judge_result.get('winner', 'Unknown')}"
-            )
+            st.success(f"Recommended winner: {st.session_state.judge_result.get('winner', 'Unknown')}")
             st.write(st.session_state.judge_result.get("reason", ""))
         else:
             st.info("Judge was not run for this generation.")
+
+    with tab7:
+        st.subheader("Generated Image")
+        if st.session_state.image_prompt_data:
+            st.write("**Prompt:**")
+            st.code(st.session_state.image_prompt_data.get("image_prompt", ""), language="text")
+            st.write("**Alt text:**", st.session_state.image_prompt_data.get("alt_text", ""))
+            st.write("**Caption:**", st.session_state.image_prompt_data.get("caption", ""))
+            st.write("**Style notes:**", st.session_state.image_prompt_data.get("style_notes", ""))
+
+        if st.session_state.generated_image:
+            st.image(st.session_state.generated_image["image_bytes"], caption="Generated featured image", use_container_width=True)
+
+        if st.session_state.uploaded_media:
+            st.success(f"Image uploaded to WordPress Media. Media ID: {st.session_state.uploaded_media.get('id')}")
+            source_url = st.session_state.uploaded_media.get("source_url")
+            if source_url:
+                st.write(source_url)
+        elif st.session_state.image_prompt_data and not XAI_API_KEY:
+            st.warning("Image prompt created, but XAI_API_KEY is missing so no image was generated.")
+        else:
+            st.info("No image was generated for this run.")
 
     st.markdown("## Choose version to send to WordPress")
 
@@ -543,7 +610,6 @@ if st.session_state.generated:
         index=options.index(current_selection),
         key="selected_version_radio"
     )
-
     st.session_state.selected_version = selected_version
 
     selected_html = None
@@ -553,6 +619,23 @@ if st.session_state.generated:
         selected_html = st.session_state.article_html_claude
 
     if selected_html:
+        featured_media_id = None
+        if st.session_state.uploaded_media and st.session_state.uploaded_media.get("id"):
+            featured_media_id = st.session_state.uploaded_media["id"]
+
+        final_html = selected_html
+        if insert_image_into_article and st.session_state.uploaded_media and st.session_state.uploaded_media.get("source_url"):
+            image_url = st.session_state.uploaded_media["source_url"]
+            alt_text = ""
+            if st.session_state.image_prompt_data:
+                alt_text = st.session_state.image_prompt_data.get("alt_text", "")
+
+            image_block = (
+                f'<figure><img src="{image_url}" alt="{alt_text}" />'
+                f"</figure>"
+            )
+            final_html = image_block + "\n\n" + final_html
+
         st.info(f"Selected version: {selected_version}")
 
         if st.button("Create selected WordPress draft"):
@@ -560,8 +643,9 @@ if st.session_state.generated:
                 with st.spinner("Creating WordPress draft..."):
                     post = create_draft_post(
                         title=st.session_state.final_title,
-                        content=selected_html,
-                        excerpt=st.session_state.excerpt
+                        content=final_html,
+                        excerpt=st.session_state.excerpt,
+                        featured_media=featured_media_id if set_as_featured_image else None,
                     )
 
                 st.success("Draft created in WordPress.")
@@ -569,7 +653,7 @@ if st.session_state.generated:
                 st.write(f"**Status:** {post.get('status')}")
                 st.write(f"**Title:** {post.get('title')}")
                 st.write(f"**Link:** {post.get('link')}")
-                st.json(post)
+                st.json(post["raw"])
 
             except Exception as e:
                 st.error(f"Draft creation failed: {str(e)}")
