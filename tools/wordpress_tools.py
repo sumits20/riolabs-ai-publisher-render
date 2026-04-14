@@ -37,9 +37,6 @@ def get_wp_auth() -> HTTPBasicAuth:
 
 
 def get_recent_posts(limit: int = 10) -> list[dict]:
-    """
-    Returns recent published posts for duplicate checking.
-    """
     base_url = get_wp_base_url()
     auth = get_wp_auth()
 
@@ -81,9 +78,6 @@ def upload_media_to_wordpress(
     alt_text: str = "",
     caption: str = "",
 ) -> dict:
-    """
-    Upload an image to the WordPress media library, then update alt text/caption.
-    """
     base_url = get_wp_base_url()
     auth = get_wp_auth()
 
@@ -97,9 +91,15 @@ def upload_media_to_wordpress(
         data=image_bytes,
         timeout=120,
     )
-    upload_response.raise_for_status()
-    media = upload_response.json()
 
+    if not upload_response.ok:
+        raise Exception(
+            f"WordPress media upload failed.\n"
+            f"Status: {upload_response.status_code}\n"
+            f"Response: {upload_response.text}"
+        )
+
+    media = upload_response.json()
     media_id = media["id"]
 
     meta_payload = {}
@@ -115,7 +115,15 @@ def upload_media_to_wordpress(
             json=meta_payload,
             timeout=60,
         )
-        meta_response.raise_for_status()
+
+        if not meta_response.ok:
+            raise Exception(
+                f"WordPress media metadata update failed.\n"
+                f"Status: {meta_response.status_code}\n"
+                f"Response: {meta_response.text}\n"
+                f"Payload: {meta_payload}"
+            )
+
         media = meta_response.json()
 
     return media
@@ -125,10 +133,10 @@ def create_draft_post(
     title: str,
     content: str,
     excerpt: str = "",
-    featured_media: Optional[int] = None,
 ) -> dict:
     """
-    Create a WordPress post draft. Optionally set featured image.
+    Safest version: create the post with text only.
+    No featured_media during creation.
     """
     base_url = get_wp_base_url()
     auth = get_wp_auth()
@@ -140,19 +148,72 @@ def create_draft_post(
         "status": "draft",
     }
 
-    if featured_media is not None:
-        payload["featured_media"] = featured_media
-
     response = requests.post(
         f"{base_url}/wp-json/wp/v2/posts",
         auth=auth,
         json=payload,
         timeout=120,
     )
-    response.raise_for_status()
+
+    if not response.ok:
+        raise Exception(
+            f"WordPress post creation failed.\n"
+            f"Status: {response.status_code}\n"
+            f"Response: {response.text}\n"
+            f"Payload: {payload}"
+        )
 
     post = response.json()
+    title_obj = post.get("title", {})
+    clean_title = title_obj.get("rendered", "") if isinstance(title_obj, dict) else str(title_obj)
 
+    return {
+        "id": post.get("id"),
+        "status": post.get("status"),
+        "link": post.get("link"),
+        "title": clean_title,
+        "raw": post,
+    }
+
+
+def update_post(
+    post_id: int,
+    featured_media: Optional[int] = None,
+    content: Optional[str] = None,
+) -> dict:
+    """
+    Update an existing post after creation.
+    Use this to attach featured image and/or update content safely.
+    """
+    base_url = get_wp_base_url()
+    auth = get_wp_auth()
+
+    payload = {}
+    if featured_media is not None:
+        payload["featured_media"] = featured_media
+    if content is not None:
+        payload["content"] = content
+
+    if not payload:
+        raise ValueError("update_post called with no fields to update")
+
+    response = requests.post(
+        f"{base_url}/wp-json/wp/v2/posts/{post_id}",
+        auth=auth,
+        json=payload,
+        timeout=120,
+    )
+
+    if not response.ok:
+        raise Exception(
+            f"WordPress post update failed.\n"
+            f"Post ID: {post_id}\n"
+            f"Status: {response.status_code}\n"
+            f"Response: {response.text}\n"
+            f"Payload: {payload}"
+        )
+
+    post = response.json()
     title_obj = post.get("title", {})
     clean_title = title_obj.get("rendered", "") if isinstance(title_obj, dict) else str(title_obj)
 
