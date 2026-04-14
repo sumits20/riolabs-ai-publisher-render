@@ -121,7 +121,7 @@ def generate_grok_image(
     Generate an image using xAI's image model through the OpenAI-compatible SDK.
     Returns:
       {
-        "image_url": str,
+        "image_url": str | None,
         "image_bytes": bytes,
         "content_type": str,
         "filename": str
@@ -139,14 +139,29 @@ def generate_grok_image(
     response = client.images.generate(
         model="grok-imagine-image",
         prompt=prompt,
-        size=aspect_ratio,
+        response_format="b64_json",
+        extra_body={
+            "aspect_ratio": aspect_ratio,
+            "resolution": "2k",   # optional: can remove or change to "1k"
+        },
     )
 
     if not response.data or not response.data[0]:
         raise ValueError("No image returned from xAI")
 
-    image_url = getattr(response.data[0], "url", None)
     b64_json = getattr(response.data[0], "b64_json", None)
+    image_url = getattr(response.data[0], "url", None)
+
+    if b64_json:
+        import base64
+
+        image_bytes = base64.b64decode(b64_json)
+        return {
+            "image_url": None,
+            "image_bytes": image_bytes,
+            "content_type": "image/png",
+            "filename": "generated_featured_image.png",
+        }
 
     if image_url:
         img_resp = requests.get(image_url, timeout=timeout)
@@ -164,17 +179,6 @@ def generate_grok_image(
             "image_bytes": img_resp.content,
             "content_type": content_type,
             "filename": f"generated_featured_image{ext}",
-        }
-
-    if b64_json:
-        import base64
-
-        image_bytes = base64.b64decode(b64_json)
-        return {
-            "image_url": None,
-            "image_bytes": image_bytes,
-            "content_type": "image/png",
-            "filename": "generated_featured_image.png",
         }
 
     raise ValueError("xAI response did not include a URL or base64 image payload")
