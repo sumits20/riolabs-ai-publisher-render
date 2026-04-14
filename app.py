@@ -280,11 +280,9 @@ Draft B (Claude):
 
 Evaluate both drafts using these criteria:
 1. Factual accuracy based on research context
-2. Clarity for Indian teenagers
-3. Structure and readability
-4. WordPress suitability
-5. Engagement without sounding childish
-6. Avoiding unsupported claims
+2. Structure and readability
+3. WordPress suitability
+4. Engagement without sounding childish
 
 Return STRICT JSON only:
 {{
